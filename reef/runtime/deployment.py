@@ -95,16 +95,20 @@ class ModelPlanSource(ABC):
 
 @dataclass(frozen=True)
 class InferenceConnection:
-    """Borrowed control transport with an explicitly versioned adapter protocol.
+    """What a started ``InferenceService`` returns: its control protocol and, when it has one, its control executor.
 
-    The protocol identifies the RPC vocabulary, including direct weight-update
-    attachment. An HTTP endpoint alone does not satisfy this connection.
-    Reusing it for replacement training workers requires the owning deployment
-    to retire the prior trainer and perform the protocol's attachment handshake.
+    ``protocol`` is the service's non-empty ``connection_protocol``; it names
+    the control vocabulary, including direct weight-update attachment.
+    ``control`` is the borrowed executor that a native weight transfer hands to
+    the sender, or None for a receiver that its ``InferenceBackend`` reaches by
+    other means, such as HTTP. A service whose connection has no executor does
+    not list ``connection_protocol`` in ``supported_transfer_protocols``.
+    Reusing a connection for replacement training workers requires the owning
+    deployment to retire the prior trainer and perform the attachment handshake.
     """
 
     protocol: str
-    control: Executor
+    control: Executor | None
 
 
 @dataclass(frozen=True)
@@ -140,8 +144,8 @@ class NativeWeightTransferSession(WeightTransferSession):
     receiver: Executor
 
 
-#: The transfer a trainer declares when it delivers adapters as PEFT directories Reef loads itself.
-ADAPTER_FILES_PROTOCOL = "reef-adapter-files-v1"
+#: The transfer a trainer declares when it delivers weights as files (full or adapter) that Reef asks the receiver to load.
+WEIGHT_FILES_PROTOCOL = "reef-weight-files-v1"
 
 
 class InferenceService(DeploymentHealth):
@@ -326,6 +330,8 @@ class ModelDeployment:
         inference.prepare_weight_transfer(connection)
         protocol = self.plan.weight_transfer_protocol(inference)
         if protocol == connection.protocol:
+            if connection.control is None:
+                raise ValueError("a native weight transfer requires the receiver's control executor")
             self.weight_transfer_session = NativeWeightTransferSession(protocol, uuid4().hex, connection.control)
         else:
             self.weight_transfer_session = WeightTransferSession(protocol, uuid4().hex)
@@ -513,6 +519,7 @@ _BUILTIN_FACTORIES = {
     "executor_training": "reef.service.runtime:ExecutorTrainingRuntimeFactory",
     "inference_proxy": "reef.inference.http:InferenceProxyRuntimeFactory",
     "ray_training": "reef.service.runtime:RayTrainingRuntimeFactory",
+    "remote": "reef.inference.remote.runtime:RemoteRuntimeFactory",
     "sglang": "reef.inference.sglang.runtime:SGLangRuntimeFactory",
     "slime_training": "reef.train.slime_backend.runtime:SlimeRuntimeFactory",
     "tinker": "reef.inference.tinker:TinkerInferenceRuntimeFactory",

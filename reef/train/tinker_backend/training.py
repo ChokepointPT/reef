@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from reef.runtime.deployment import (
-    ADAPTER_FILES_PROTOCOL,
+    WEIGHT_FILES_PROTOCOL,
     DeploymentResources,
     InferenceResources,
     TrainingService,
@@ -60,10 +60,48 @@ class TinkerDeploymentResources(InferenceResources):
                 ray.shutdown()
 
 
+class RaySessionResources(DeploymentResources):
+    """One Ray session for Reef's coordinator, when the engines run on a remote component.
+
+    Values: ``ray_address`` and ``namespace`` are non-empty strings; ``started``
+    and ``closed`` record the lifecycle, which runs at most once from new to
+    started to closed. ``start`` joins the cluster at ``ray_address`` in
+    ``namespace`` and reserves no GPU; ``close`` leaves the session, and is
+    allowed before ``start`` and more than once.
+    """
+
+    def __init__(self, *, ray_address: str, namespace: str) -> None:
+        if not ray_address or not namespace:
+            raise ValueError("a Ray session needs the cluster address and a namespace")
+        self.ray_address = ray_address
+        self.namespace = namespace
+        self.started = False
+        self.closed = False
+
+    def start(self) -> None:
+        import ray
+
+        if self.started or self.closed:
+            raise RuntimeError("deployment resources can only be started once")
+        if ray.is_initialized():
+            raise RuntimeError("the model driver requires its own Ray client session")
+        self.started = True
+        ray.init(address=self.ray_address, namespace=self.namespace)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self.started:
+            import ray
+
+            ray.shutdown()
+
+
 class TinkerTrainingService(TrainingService):
     """Own the SDK client; the trainer delivers adapter files, so it needs no engine handle."""
 
-    weight_transfer_protocols = (ADAPTER_FILES_PROTOCOL,)
+    weight_transfer_protocols = (WEIGHT_FILES_PROTOCOL,)
 
     def __init__(
         self,
