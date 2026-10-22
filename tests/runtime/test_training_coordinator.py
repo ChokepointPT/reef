@@ -9,6 +9,7 @@ import pytest
 
 from reef.runtime.interfaces import (
     InferenceBackend,
+    InferenceMemoryHandoffBackend,
     PreparedTrainingJob,
     TrainingBackend,
     TrainingCheckpoint,
@@ -51,6 +52,11 @@ class Receiver(InferenceBackend):
         self.events.append("inference.abort")
         self.paused = True
 
+    def unload_adapter(self, name):
+        self.events.append(("inference.unload", name))
+
+
+class MemoryHandoffReceiver(Receiver, InferenceMemoryHandoffBackend):
     def offload(self, tags):
         self.events.append(("inference.offload", tags))
 
@@ -59,9 +65,6 @@ class Receiver(InferenceBackend):
 
     def onload_kv(self):
         self.events.append("inference.kv")
-
-    def unload_adapter(self, name):
-        self.events.append(("inference.unload", name))
 
 
 class Trainer(TrainingBackend):
@@ -161,11 +164,18 @@ class Job(PreparedTrainingJob):
 
 def build(tmp_path, *, colocate=False, owns_training=True):
     events = []
-    inference = Receiver(events)
+    inference = MemoryHandoffReceiver(events) if colocate else Receiver(events)
     training = Trainer(tmp_path, inference, events, colocate=colocate)
     coordinator = TrainingCoordinator(training, inference, owns_training=owns_training)
     events.clear()
     return coordinator, training, inference, events
+
+
+def test_colocated_training_requires_a_receiver_that_releases_gpu_memory(tmp_path):
+    events = []
+    inference = Receiver(events)
+    with pytest.raises(TypeError, match="colocated training cannot share GPUs with Receiver"):
+        TrainingCoordinator(Trainer(tmp_path, inference, events, colocate=True), inference)
 
 
 @pytest.mark.parametrize("colocate", [False, True])

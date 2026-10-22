@@ -9,7 +9,8 @@ Who implements what:
 - A training integration *implements* ``TrainingBackend`` (with
   ``PreparedTrainingJob``) so Reef's coordinator can drive it.
 - An inference integration *implements* ``InferenceHandler`` for requests,
-  ``InferenceBackend`` for weight receipt, and ``InferenceMemoryOperations``
+  ``InferenceBackend`` for weight receipt (``InferenceMemoryHandoffBackend`` when
+  it can share GPUs with a trainer), and ``InferenceMemoryOperations``
   and ``AdapterEngine`` for the memory and adapter operations ``scheduler``
   and ``publication`` call back into. The engine supervision hooks live in
   ``recovery`` next to the objects that drive them.
@@ -1039,6 +1040,22 @@ class InferenceBackend(ABC):
     def abort(self) -> None: ...
 
     @abstractmethod
+    def unload_adapter(self, name: str) -> None: ...
+
+
+class InferenceMemoryHandoffBackend(InferenceBackend):
+    """An ``InferenceBackend`` that can also release its GPU memory to a trainer and take it back.
+
+    This is a capability, not a deployment mode: the same receiver serves
+    colocated and separate deployments. Reef's coordinator requires it only
+    when the training backend's ``TrainingCoordinationConfig.colocate`` is set,
+    and calls these operations only then. ``offload`` releases the regions that
+    ``tags`` names (``None`` releases every region); ``onload_weights`` and
+    ``onload_kv`` restore the weight and KV-cache regions. Each returns only
+    after every engine changed.
+    """
+
+    @abstractmethod
     def offload(self, tags: tuple[str, ...] | None) -> None: ...
 
     @abstractmethod
@@ -1046,9 +1063,6 @@ class InferenceBackend(ABC):
 
     @abstractmethod
     def onload_kv(self) -> None: ...
-
-    @abstractmethod
-    def unload_adapter(self, name: str) -> None: ...
 
 
 class AdapterEngine(ABC):
